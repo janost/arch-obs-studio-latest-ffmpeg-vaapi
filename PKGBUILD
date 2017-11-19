@@ -11,14 +11,14 @@ arch=("i686" "x86_64")
 url="https://github.com/jp9000/obs-studio"
 license=("GPL2")
 depends=("ffmpeg" "jansson" "libxinerama" "libxkbcommon-x11"
-         "qt5-x11extras" "curl" "gtk-update-icon-cache" "cef-minimal")
+         "qt5-x11extras" "curl" "gtk-update-icon-cache" "cef-minimal" "pepper-flash")
 makedepends=("cmake" "git" "libfdk-aac" "libxcomposite" "x264" "jack" "vlc")
 optdepends=("libfdk-aac: FDK AAC codec support"
             "libxcomposite: XComposite capture support"
             "jack: JACK Support"
-            "vlc: VLC Media Source"
-            "pepper-flash: Flash support")
-provides=("obs-studio" "obs-linuxbrowser")
+            "vlc: VLC Media Source")
+provides=("obs-studio")
+conflicts=("obs-studio-git" "obs-linuxbrowser")
 source=("$pkgname::git+https://github.com/jp9000/obs-studio.git"
        "git+https://github.com/Mixer/ftl-sdk.git"
        "git+https://github.com/bazukas/obs-linuxbrowser.git"
