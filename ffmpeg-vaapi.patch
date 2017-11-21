@@ -1,27 +1,22 @@
-From 9c70ee2347285c4d7e087106c565ba5b5bbe16a6 Mon Sep 17 00:00:00 2001
-From: Ivan Avdeev <me@w23.ru>
-Date: Mon, 16 Jan 2017 13:38:31 +0700
-Subject: [PATCH] ffmpeg-vaapi: experimental h264 HW enc for Linux
+From 5354910fb62adfc56ee6b802c8a41fb77d86a215 Mon Sep 17 00:00:00 2001
+From: GloriousEggroll <gloriouseggroll@gmail.com>
+Date: Tue, 21 Nov 2017 01:08:22 -0500
+Subject: [PATCH] ffmpeg-vaapi update
 
-This is work in progress. Basically it works but has a few issues:
-Expects ":0" to be the display that VAAPI uses to communicate to HW.
-The only tested VAAPI impl (Mesa 13.0.3, radeonsi on AMD Radeon R9
-Fury X) produces stream of packets with very high jitter and low
-framerate.
 ---
  plugins/obs-ffmpeg/CMakeLists.txt     |   1 +
- plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 447 ++++++++++++++++++++++++++++++++++
+ plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 514 ++++++++++++++++++++++++++++++++++
  plugins/obs-ffmpeg/obs-ffmpeg.c       |  11 +
- 3 files changed, 459 insertions(+)
+ 3 files changed, 526 insertions(+)
  create mode 100644 plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 
 diff --git a/plugins/obs-ffmpeg/CMakeLists.txt b/plugins/obs-ffmpeg/CMakeLists.txt
-index 50c9c8d4..04da791e 100644
+index 4c04ab1e..83c52cd0 100644
 --- a/plugins/obs-ffmpeg/CMakeLists.txt
 +++ b/plugins/obs-ffmpeg/CMakeLists.txt
 @@ -17,6 +17,7 @@ set(obs-ffmpeg_SOURCES
  	obs-ffmpeg.c
- 	obs-ffmpeg-aac.c
+ 	obs-ffmpeg-audio-encoders.c
  	obs-ffmpeg-nvenc.c
 +	obs-ffmpeg-vaapi.c
  	obs-ffmpeg-output.c
@@ -29,10 +24,10 @@ index 50c9c8d4..04da791e 100644
  	obs-ffmpeg-source.c)
 diff --git a/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 new file mode 100644
-index 00000000..fa7e025c
+index 00000000..cc2f4a02
 --- /dev/null
 +++ b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,514 @@
 +/******************************************************************************
 +    Copyright (C) 2016 by Hugh Bailey <obs.jim@gmail.com>
 +
@@ -56,6 +51,8 @@ index 00000000..fa7e025c
 +#include <media-io/video-io.h>
 +#include <obs-module.h>
 +#include <obs-avc.h>
++
++#include <unistd.h>
 +
 +#include <libavutil/opt.h>
 +#include <libavutil/pixdesc.h>
@@ -130,8 +127,9 @@ index 00000000..fa7e025c
 +{
 +	int ret;
 +
-+	/* 1. Allocate and initialize hardware interface */
-+	ret = av_hwdevice_ctx_create(&enc->vadevice_ref, AV_HWDEVICE_TYPE_VAAPI, ":0" /*FIXME*/, NULL, 0);
++
++
++	ret = av_hwdevice_ctx_create(&enc->vadevice_ref, AV_HWDEVICE_TYPE_VAAPI, "/dev/dri/renderD128", NULL, 0);
 +	if (ret < 0) {
 +		warn("Failed to create VAAPI device context: %s", av_err2str(ret));
 +		return false;
@@ -202,9 +200,12 @@ index 00000000..fa7e025c
 +{
 +	struct vaapi_encoder *enc = data;
 +
++	int profile = (int)obs_data_get_int(settings, "profile");
 +	int bitrate = (int)obs_data_get_int(settings, "bitrate");
-+//	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
++	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
 +	int bf = (int)obs_data_get_int(settings, "bf");
++	int qp = (int)obs_data_get_int(settings, "qp");
++	int quality = (int)obs_data_get_int(settings, "quality");
 +
 +	video_t *video = obs_encoder_video(enc->encoder);
 +	const struct video_output_info *voi = video_output_get_info(video);
@@ -216,8 +217,13 @@ index 00000000..fa7e025c
 +
 +	vaapi_video_info(enc, &info);
 +
++	av_opt_set_int(enc->context->priv_data, "qp", qp, 0);
++	av_opt_set_int(enc->context->priv_data, "quality", quality, 0);
++
++	enc->context->profile = profile;
 +	enc->context->bit_rate = bitrate * 1000;
-+	enc->context->rc_buffer_size = bitrate * 1000;
++	enc->context->max_b_frames = bf;
++
 +	enc->context->width = obs_encoder_get_width(enc->encoder);
 +	enc->context->height = obs_encoder_get_height(enc->encoder);
 +	enc->context->time_base = (AVRational){voi->fps_den, voi->fps_num};
@@ -226,25 +232,24 @@ index 00000000..fa7e025c
 +		AVCOL_SPC_BT709 : AVCOL_SPC_BT470BG;
 +	enc->context->color_range = info.range == VIDEO_RANGE_FULL ?
 +		AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-+	enc->context->max_b_frames = bf;
-+	enc->context->profile = FF_PROFILE_H264_MAIN;
 +
-+/*	if (keyint_sec)
-+		enc->context->gop_size = keyint_sec * voi->fps_num /
-+			voi->fps_den;
-+	else
-+		enc->context->gop_size = 250;
-+		*/
-+	enc->context->gop_size = 120;
++	if (keyint_sec > 0) {
++		enc->context->gop_size = keyint_sec * voi->fps_num / voi->fps_den;
++	} else {
++		enc->context->gop_size = 120;
++	}
 +
 +	enc->height = enc->context->height;
 +
 +	info("settings:\n"
++	     "\tqp:           %d\n"
++	     "\tquality:      %d\n"
 +	     "\tbitrate:      %d\n"
 +	     "\tkeyint:       %d\n"
 +	     "\twidth:        %d\n"
 +	     "\theight:       %d\n"
 +	     "\tb-frames:     %d\n",
++         qp, quality,
 +	     bitrate, enc->context->gop_size,
 +	     enc->context->width, enc->context->height,
 +	     enc->context->max_b_frames);
@@ -423,11 +428,38 @@ index 00000000..fa7e025c
 +	return true;
 +}
 +
++static void set_visible(obs_properties_t *ppts, const char *name, bool visible)
++{
++	obs_property_t *p = obs_properties_get(ppts, name);
++	obs_property_set_visible(p, visible);
++}
++
++
 +static void vaapi_defaults(obs_data_t *settings)
 +{
++	obs_data_set_default_string(settings, "vaapi_device", "/dev/dri/renderD128");
++	obs_data_set_default_int(settings, "profile", FF_PROFILE_H264_HIGH);
 +	obs_data_set_default_int(settings, "bitrate", 2500);
 +	obs_data_set_default_int(settings, "keyint_sec", 0);
-+	obs_data_set_default_int(settings, "bf", 2);
++	obs_data_set_default_int(settings, "bf", 0);
++	obs_data_set_default_int(settings, "qp", 20);
++	obs_data_set_default_int(settings, "quality", 0);
++}
++
++static bool profile_modified(obs_properties_t *ppts, obs_property_t *p,
++		obs_data_t *settings)
++{
++	UNUSED_PARAMETER(p);
++
++	int profile_type = (int)obs_data_get_int(settings, "profile");
++
++	set_visible(ppts, "bf", false);
++	if (profile_type >= FF_PROFILE_H264_HIGH) {
++		set_visible(ppts, "bf", true);
++		obs_data_set_default_int(settings, "bf", 0);
++	}
++
++	return true;
 +}
 +
 +static obs_properties_t *vaapi_properties(void *unused)
@@ -435,15 +467,45 @@ index 00000000..fa7e025c
 +	UNUSED_PARAMETER(unused);
 +
 +	obs_properties_t *props = obs_properties_create();
++	obs_property_t *list;
++
++	list = obs_properties_add_list(props, "vaapi_device", "VAAPI Device",
++			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
++	char path[128] = "/dev/dri/renderD1";
++	for (int i = 28;; i++) {
++		sprintf(path, "/dev/dri/renderD1%d", i);
++		if (access(path, F_OK) == 0) {			
++			char card[128] = "Card: ";
++			sprintf(card, "Card%d: %s", i-28, path);
++			obs_property_list_add_string(list, card, path);
++		} else {
++			break;
++		}
++	}
++
++	list = obs_properties_add_list(props, "profile", "Profile",
++			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
++	obs_property_list_add_int(list, "baseline", FF_PROFILE_H264_BASELINE);
++	obs_property_list_add_int(list, "constrained baseline", FF_PROFILE_H264_CONSTRAINED_BASELINE);
++	obs_property_list_add_int(list, "main", FF_PROFILE_H264_MAIN);
++	obs_property_list_add_int(list, "high", FF_PROFILE_H264_HIGH);
++
++	obs_property_set_modified_callback(list, profile_modified);
 +
 +	obs_properties_add_int(props, "bitrate",
 +			obs_module_text("Bitrate"), 50, 300000, 50);
 +
 +	obs_properties_add_int(props, "keyint_sec",
-+			obs_module_text("KeyframeIntervalSec"), 0, 10, 1);
++			obs_module_text("KeyframeIntervalSec"), 0, 20, 1);
 +
 +	obs_properties_add_int(props, "bf", obs_module_text("BFrames"),
 +			0, 4, 1);
++
++	obs_properties_add_int(props, "qp",
++			obs_module_text("QP"), 0, 52, 1);
++
++	obs_properties_add_int(props, "quality",
++			obs_module_text("Quality"), 0, 8, 1);
 +
 +	return props;
 +}
@@ -481,18 +543,18 @@ index 00000000..fa7e025c
 +	.get_video_info = vaapi_video_info
 +};
 diff --git a/plugins/obs-ffmpeg/obs-ffmpeg.c b/plugins/obs-ffmpeg/obs-ffmpeg.c
-index ce6de777..f117e079 100644
+index 30f30bd0..a21d1272 100644
 --- a/plugins/obs-ffmpeg/obs-ffmpeg.c
 +++ b/plugins/obs-ffmpeg/obs-ffmpeg.c
-@@ -14,6 +14,7 @@ extern struct obs_output_info  ffmpeg_muxer;
- extern struct obs_output_info  replay_buffer;
+@@ -15,6 +15,7 @@ extern struct obs_output_info  replay_buffer;
  extern struct obs_encoder_info aac_encoder_info;
+ extern struct obs_encoder_info opus_encoder_info;
  extern struct obs_encoder_info nvenc_encoder_info;
 +extern struct obs_encoder_info vaapi_encoder_info;
  
  static DARRAY(struct log_context {
  	void *context;
-@@ -136,6 +137,12 @@ static bool nvenc_supported(void)
+@@ -137,6 +138,12 @@ static bool nvenc_supported(void)
  	return !!lib;
  }
  
@@ -505,7 +567,7 @@ index ce6de777..f117e079 100644
  bool obs_module_load(void)
  {
  	da_init(active_log_contexts);
-@@ -152,6 +159,10 @@ bool obs_module_load(void)
+@@ -154,6 +161,10 @@ bool obs_module_load(void)
  		blog(LOG_INFO, "NVENC supported");
  		obs_register_encoder(&nvenc_encoder_info);
  	}
