@@ -438,7 +438,7 @@ index 00000000..cc2f4a02
 +static void vaapi_defaults(obs_data_t *settings)
 +{
 +	obs_data_set_default_string(settings, "vaapi_device", "/dev/dri/renderD128");
-+	obs_data_set_default_int(settings, "profile", FF_PROFILE_H264_HIGH);
++	obs_data_set_default_int(settings, "profile", FF_PROFILE_H264_MAIN);
 +	obs_data_set_default_int(settings, "bitrate", 2500);
 +	obs_data_set_default_int(settings, "keyint_sec", 0);
 +	obs_data_set_default_int(settings, "bf", 0);
