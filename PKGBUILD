@@ -21,9 +21,8 @@ provides=("obs-studio")
 conflicts=("obs-studio-git" "obs-linuxbrowser")
 source=("$pkgname::git+https://github.com/jp9000/obs-studio.git"
        "git+https://github.com/Mixer/ftl-sdk.git"
-       "transparentpainting.patch"
        "ffmpeg-vaapi.patch")
-md5sums=("SKIP" "SKIP" "SKIP" "SKIP")
+md5sums=("SKIP" "SKIP" "SKIP")
 
 pkgver() {
   cd $pkgname
