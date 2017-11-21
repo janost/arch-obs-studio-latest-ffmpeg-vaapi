@@ -9,8 +9,12 @@ An intel or amd gpu that supports h.264 encoding, running on open source drivers
 libva-vdpau-driver  
 libvdpau-va-gl  
 
+for intel you may also need:  
+libva-intel-driver  
+
 install instructions on arch:  
-sudo pacman -S libva-vdpau-driver libvdpau-va-gl  
+sudo pacman -S libva-vdpau-driver libvdpau-va-gl  libva-intel-driver
+
 git clone https://github.com/GloriousEggroll/arch-obs-studio-latest-ffmpeg-vaapi  
 cd arch-obs-studio-latest-ffmpeg-vaapi  
 makepkg -i  
