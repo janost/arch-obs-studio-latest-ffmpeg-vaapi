@@ -10,7 +10,7 @@ libva-vdpau-driver
 libvdpau-va-gl  
 
 install instructions on arch:  
-sudo pacman -S libva-vdpau-driver libvdpau-va-gl
+sudo pacman -S libva-vdpau-driver libvdpau-va-gl  
 git clone https://github.com/GloriousEggroll/arch-obs-studio-latest-ffmpeg-vaapi  
 cd arch-obs-studio-latest-ffmpeg-vaapi  
 makepkg -i  
