@@ -18,7 +18,7 @@ optdepends=("libfdk-aac: FDK AAC codec support"
             "jack: JACK Support"
             "vlc: VLC Media Source")
 provides=("obs-studio")
-conflicts=("obs-studio-git" "obs-linuxbrowser")
+conflicts=("obs-studio-git")
 source=("$pkgname::git+https://github.com/jp9000/obs-studio.git"
        "git+https://github.com/Mixer/ftl-sdk.git"
        "ffmpeg-vaapi.patch")
