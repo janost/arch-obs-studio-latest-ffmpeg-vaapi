@@ -1,13 +1,13 @@
-From 5354910fb62adfc56ee6b802c8a41fb77d86a215 Mon Sep 17 00:00:00 2001
+From 8ce4d41e4feaf5bb9684a88dc3ffe145e9116961 Mon Sep 17 00:00:00 2001
 From: GloriousEggroll <gloriouseggroll@gmail.com>
-Date: Tue, 21 Nov 2017 01:08:22 -0500
-Subject: [PATCH] ffmpeg-vaapi update
+Date: Sat, 25 Nov 2017 08:48:29 -0500
+Subject: [PATCH] plugins: obs-ffmpeg-vaapi
 
 ---
  plugins/obs-ffmpeg/CMakeLists.txt     |   1 +
- plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 514 ++++++++++++++++++++++++++++++++++
+ plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 558 ++++++++++++++++++++++++++++++++++
  plugins/obs-ffmpeg/obs-ffmpeg.c       |  11 +
- 3 files changed, 526 insertions(+)
+ 3 files changed, 570 insertions(+)
  create mode 100644 plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 
 diff --git a/plugins/obs-ffmpeg/CMakeLists.txt b/plugins/obs-ffmpeg/CMakeLists.txt
@@ -24,10 +24,10 @@ index 4c04ab1e..83c52cd0 100644
  	obs-ffmpeg-source.c)
 diff --git a/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 new file mode 100644
-index 00000000..cc2f4a02
+index 00000000..9d475da0
 --- /dev/null
 +++ b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,558 @@
 +/******************************************************************************
 +    Copyright (C) 2016 by Hugh Bailey <obs.jim@gmail.com>
 +
@@ -64,7 +64,7 @@ index 00000000..cc2f4a02
 +#include "obs-ffmpeg-formats.h"
 +
 +#define do_log(level, format, ...) \
-+	blog(level, "[VAAPI encoder: '%s'] " format, \
++	blog(level, "[FFMPEG VAAPI encoder: '%s'] " format, \
 +			obs_encoder_get_name(enc->encoder), ##__VA_ARGS__)
 +
 +#define warn(format, ...)  do_log(LOG_WARNING, format, ##__VA_ARGS__)
@@ -99,7 +99,7 @@ index 00000000..cc2f4a02
 +static const char *vaapi_getname(void *unused)
 +{
 +	UNUSED_PARAMETER(unused);
-+	return "VAAPI H.264";
++	return "FFMPEG VAAPI H.264";
 +}
 +
 +static inline bool valid_format(enum video_format format)
@@ -163,6 +163,7 @@ index 00000000..cc2f4a02
 +	enc->vframe->format = enc->context->pix_fmt;
 +	enc->vframe->width = enc->context->width;
 +	enc->vframe->height = enc->context->height;
++
 +	enc->vframe->colorspace = enc->context->colorspace;
 +	enc->vframe->color_range = enc->context->color_range;
 +
@@ -189,18 +190,12 @@ index 00000000..cc2f4a02
 +	return true;
 +}
 +
-+enum RC_MODE {
-+	RC_MODE_CBR,
-+	RC_MODE_VBR,
-+	RC_MODE_CQP,
-+	RC_MODE_LOSSLESS
-+};
-+
 +static bool vaapi_update(void *data, obs_data_t *settings)
 +{
 +	struct vaapi_encoder *enc = data;
 +
 +	int profile = (int)obs_data_get_int(settings, "profile");
++	int level = (int)obs_data_get_int(settings, "level");
 +	int bitrate = (int)obs_data_get_int(settings, "bitrate");
 +	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
 +	int bf = (int)obs_data_get_int(settings, "bf");
@@ -221,11 +216,20 @@ index 00000000..cc2f4a02
 +	av_opt_set_int(enc->context->priv_data, "quality", quality, 0);
 +
 +	enc->context->profile = profile;
++	enc->context->level = level;
 +	enc->context->bit_rate = bitrate * 1000;
 +	enc->context->max_b_frames = bf;
 +
 +	enc->context->width = obs_encoder_get_width(enc->encoder);
 +	enc->context->height = obs_encoder_get_height(enc->encoder);
++
++	/* for h.264, 1080 isn't devisable by 16, so we must lower */
++	/* height to prevent green or black bars */
++
++	if(enc->context->height == 1080) {
++		enc->context->height = 1072;
++	}
++
 +	enc->context->time_base = (AVRational){voi->fps_den, voi->fps_num};
 +	enc->context->pix_fmt = obs_to_ffmpeg_video_format(info.format);
 +	enc->context->colorspace = info.colorspace == VIDEO_CS_709 ?
@@ -241,15 +245,18 @@ index 00000000..cc2f4a02
 +
 +	enc->height = enc->context->height;
 +
++
 +	info("settings:\n"
 +	     "\tqp:           %d\n"
 +	     "\tquality:      %d\n"
++	     "\tprofile:      %d\n"
++	     "\tlevel:        %d\n"
 +	     "\tbitrate:      %d\n"
 +	     "\tkeyint:       %d\n"
 +	     "\twidth:        %d\n"
 +	     "\theight:       %d\n"
 +	     "\tb-frames:     %d\n",
-+         qp, quality,
++             qp, quality, profile, level,
 +	     bitrate, enc->context->gop_size,
 +	     enc->context->width, enc->context->height,
 +	     enc->context->max_b_frames);
@@ -439,11 +446,14 @@ index 00000000..cc2f4a02
 +{
 +	obs_data_set_default_string(settings, "vaapi_device", "/dev/dri/renderD128");
 +	obs_data_set_default_int(settings, "profile", FF_PROFILE_H264_BASELINE);
++	obs_data_set_default_int(settings, "level", 31);
 +	obs_data_set_default_int(settings, "bitrate", 2500);
 +	obs_data_set_default_int(settings, "keyint_sec", 0);
 +	obs_data_set_default_int(settings, "bf", 0);
 +	obs_data_set_default_int(settings, "qp", 20);
 +	obs_data_set_default_int(settings, "quality", 0);
++	obs_data_set_default_int(settings, "rendermode", 0);
++
 +}
 +
 +static bool profile_modified(obs_properties_t *ppts, obs_property_t *p,
@@ -457,6 +467,26 @@ index 00000000..cc2f4a02
 +	if (profile_type >= FF_PROFILE_H264_HIGH) {
 +		set_visible(ppts, "bf", true);
 +		obs_data_set_default_int(settings, "bf", 0);
++	}
++
++	return true;
++}
++
++static bool rendermode_modified(obs_properties_t *ppts, obs_property_t *p,
++		obs_data_t *settings)
++{
++	UNUSED_PARAMETER(p);
++
++	int rendermode = (int)obs_data_get_int(settings, "rendermode");
++
++	set_visible(ppts, "qp", false);
++	set_visible(ppts, "bitrate", true);
++	obs_data_set_default_int(settings, "bitrate", 2500);
++
++	if (rendermode > 0) {
++		set_visible(ppts, "qp", true);
++		set_visible(ppts, "bitrate", false);
++		obs_data_set_default_int(settings, "bitrate", 0);
 +	}
 +
 +	return true;
@@ -485,26 +515,40 @@ index 00000000..cc2f4a02
 +
 +	list = obs_properties_add_list(props, "profile", "Profile",
 +			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-+	obs_property_list_add_int(list, "baseline (default)", FF_PROFILE_H264_BASELINE);
-+	obs_property_list_add_int(list, "constrained baseline", FF_PROFILE_H264_CONSTRAINED_BASELINE);
++
++	obs_property_list_add_int(list, "baseline", FF_PROFILE_H264_BASELINE);
 +	obs_property_list_add_int(list, "main", FF_PROFILE_H264_MAIN);
 +	obs_property_list_add_int(list, "high", FF_PROFILE_H264_HIGH);
 +
 +	obs_property_set_modified_callback(list, profile_modified);
 +
++	list = obs_properties_add_list(props, "level", "Level",
++			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
++	obs_property_list_add_int(list, "480p30 (3.0)", 30);
++	obs_property_list_add_int(list, "720p30/480p60  (3.1 default)", 31);
++	obs_property_list_add_int(list, "720p60/1080p30 (4.1)", 41);
++	obs_property_list_add_int(list, "1080p60 (4.2)", 42);
++
++	list = obs_properties_add_list(props, "rendermode", "Render Mode",
++			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
++	obs_property_list_add_int(list, "Bitrate", 0);
++	obs_property_list_add_int(list, "QP", 1);
++
++	obs_property_set_modified_callback(list, rendermode_modified);
++
 +	obs_properties_add_int(props, "bitrate",
 +			obs_module_text("Bitrate"), 0, 300000, 50);
 +
 +	obs_properties_add_int(props, "keyint_sec",
-+			obs_module_text("KeyframeIntervalSec"), 0, 20, 1);
++			obs_module_text("Keyframe Interval (seconds)"), 0, 20, 1);
 +
-+	obs_properties_add_int(props, "bf", obs_module_text("BFrames"),
++	obs_properties_add_int(props, "bf", obs_module_text("B-frames (Not supported on AMD, set 0)"),
 +			0, 4, 1);
 +
 +	obs_properties_add_int(props, "qp",
 +			obs_module_text("QP"), 0, 52, 1);
 +
-+	obs_properties_add_int(props, "quality",
++	obs_properties_add_int(props, "quality (higher is worse but faster)",
 +			obs_module_text("Quality"), 0, 8, 1);
 +
 +	return props;
@@ -543,7 +587,7 @@ index 00000000..cc2f4a02
 +	.get_video_info = vaapi_video_info
 +};
 diff --git a/plugins/obs-ffmpeg/obs-ffmpeg.c b/plugins/obs-ffmpeg/obs-ffmpeg.c
-index 30f30bd0..a21d1272 100644
+index 30f30bd0..7219f5b5 100644
 --- a/plugins/obs-ffmpeg/obs-ffmpeg.c
 +++ b/plugins/obs-ffmpeg/obs-ffmpeg.c
 @@ -15,6 +15,7 @@ extern struct obs_output_info  replay_buffer;
@@ -572,7 +616,7 @@ index 30f30bd0..a21d1272 100644
  		obs_register_encoder(&nvenc_encoder_info);
  	}
 +	if (vaapi_supported()) {
-+		blog(LOG_INFO, "VAAPI supported");
++		blog(LOG_INFO, "FFMPEG VAAPI supported");
 +		obs_register_encoder(&vaapi_encoder_info);
 +	}
  	return true;
