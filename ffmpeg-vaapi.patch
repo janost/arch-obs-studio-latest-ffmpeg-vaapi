@@ -1,13 +1,13 @@
-From 8ce4d41e4feaf5bb9684a88dc3ffe145e9116961 Mon Sep 17 00:00:00 2001
+From 4cb1de2f02d298e53067a8710214e5cb8dbfc3a3 Mon Sep 17 00:00:00 2001
 From: GloriousEggroll <gloriouseggroll@gmail.com>
-Date: Sat, 25 Nov 2017 08:48:29 -0500
-Subject: [PATCH] plugins: obs-ffmpeg-vaapi
+Date: Sun, 26 Nov 2017 03:06:33 -0500
+Subject: [PATCH] obs-ffmpeg: VAAPI encoder support
 
 ---
  plugins/obs-ffmpeg/CMakeLists.txt     |   1 +
- plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 558 ++++++++++++++++++++++++++++++++++
+ plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c | 669 ++++++++++++++++++++++++++++++++++
  plugins/obs-ffmpeg/obs-ffmpeg.c       |  11 +
- 3 files changed, 570 insertions(+)
+ 3 files changed, 681 insertions(+)
  create mode 100644 plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 
 diff --git a/plugins/obs-ffmpeg/CMakeLists.txt b/plugins/obs-ffmpeg/CMakeLists.txt
@@ -24,10 +24,10 @@ index 4c04ab1e..83c52cd0 100644
  	obs-ffmpeg-source.c)
 diff --git a/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
 new file mode 100644
-index 00000000..9d475da0
+index 00000000..c46967fd
 --- /dev/null
 +++ b/plugins/obs-ffmpeg/obs-ffmpeg-vaapi.c
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,669 @@
 +/******************************************************************************
 +    Copyright (C) 2016 by Hugh Bailey <obs.jim@gmail.com>
 +
@@ -99,7 +99,7 @@ index 00000000..9d475da0
 +static const char *vaapi_getname(void *unused)
 +{
 +	UNUSED_PARAMETER(unused);
-+	return "FFMPEG VAAPI H.264";
++	return "FFMPEG VAAPI";
 +}
 +
 +static inline bool valid_format(enum video_format format)
@@ -194,13 +194,36 @@ index 00000000..9d475da0
 +{
 +	struct vaapi_encoder *enc = data;
 +
++	int codec = (int)obs_data_get_string(settings, "vaapi_codec");
++
 +	int profile = (int)obs_data_get_int(settings, "profile");
++	int bf = (int)obs_data_get_int(settings, "bf");
++
 +	int level = (int)obs_data_get_int(settings, "level");
 +	int bitrate = (int)obs_data_get_int(settings, "bitrate");
 +	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
-+	int bf = (int)obs_data_get_int(settings, "bf");
++
 +	int qp = (int)obs_data_get_int(settings, "qp");
 +	int quality = (int)obs_data_get_int(settings, "quality");
++	int lfl = (int)obs_data_get_int(settings, "lfl");
++	int lfs = (int)obs_data_get_int(settings, "lfs");
++
++	if(codec==AV_CODEC_ID_H264 || codec==AV_CODEC_ID_HEVC) {
++		av_opt_set_int(enc->context->priv_data, "qp", qp, 0);
++	}
++
++	if(codec==AV_CODEC_ID_H264) {
++		av_opt_set_int(enc->context->priv_data, "quality", quality, 0);
++	}
++
++	if(codec==AV_CODEC_ID_VP8 || codec==AV_CODEC_ID_VP9 || codec==AV_CODEC_ID_MPEG2VIDEO) {
++		enc->context->global_quality = quality;
++	}
++
++	if(codec==AV_CODEC_ID_VP8 || codec==AV_CODEC_ID_VP9) {
++		av_opt_set_int(enc->context->priv_data, "loop_filter_level", lfl, 0);
++		av_opt_set_int(enc->context->priv_data, "loop_filter_sharpness", lfs, 0);
++	}
 +
 +	video_t *video = obs_encoder_video(enc->encoder);
 +	const struct video_output_info *voi = video_output_get_info(video);
@@ -212,13 +235,13 @@ index 00000000..9d475da0
 +
 +	vaapi_video_info(enc, &info);
 +
-+	av_opt_set_int(enc->context->priv_data, "qp", qp, 0);
-+	av_opt_set_int(enc->context->priv_data, "quality", quality, 0);
++	if(codec!=AV_CODEC_ID_VP8) {
++		enc->context->profile = profile;
++		enc->context->max_b_frames = bf;
++	}
 +
-+	enc->context->profile = profile;
 +	enc->context->level = level;
 +	enc->context->bit_rate = bitrate * 1000;
-+	enc->context->max_b_frames = bf;
 +
 +	enc->context->width = obs_encoder_get_width(enc->encoder);
 +	enc->context->height = obs_encoder_get_height(enc->encoder);
@@ -226,7 +249,7 @@ index 00000000..9d475da0
 +	/* for h.264, 1080 isn't devisable by 16, so we must lower */
 +	/* height to prevent green or black bars */
 +
-+	if(enc->context->height == 1080) {
++	if(enc->context->height == 1080 && codec==AV_CODEC_ID_H264) {
 +		enc->context->height = 1072;
 +	}
 +
@@ -245,7 +268,6 @@ index 00000000..9d475da0
 +
 +	enc->height = enc->context->height;
 +
-+
 +	info("settings:\n"
 +	     "\tqp:           %d\n"
 +	     "\tquality:      %d\n"
@@ -255,11 +277,13 @@ index 00000000..9d475da0
 +	     "\tkeyint:       %d\n"
 +	     "\twidth:        %d\n"
 +	     "\theight:       %d\n"
-+	     "\tb-frames:     %d\n",
++	     "\tb-frames:     %d\n"
++	     "\tloop-filter-level:     %d\n"
++	     "\tloop-filter-sharpness:     %d\n",
 +             qp, quality, profile, level,
 +	     bitrate, enc->context->gop_size,
 +	     enc->context->width, enc->context->height,
-+	     enc->context->max_b_frames);
++	     enc->context->max_b_frames,lfl,lfs);
 +
 +	return vaapi_init_codec(enc);
 +}
@@ -297,12 +321,29 @@ index 00000000..9d475da0
 +static void *vaapi_create(obs_data_t *settings, obs_encoder_t *encoder)
 +{
 +	struct vaapi_encoder *enc;
-+
 +	avcodec_register_all();
 +
 +	enc = bzalloc(sizeof(*enc));
 +	enc->encoder = encoder;
-+	enc->vaapi = avcodec_find_encoder_by_name("h264_vaapi");
++
++	int vaapi_codec = (int)obs_data_get_int(settings, "vaapi_codec");
++
++	if(vaapi_codec==AV_CODEC_ID_HEVC) {
++		enc->vaapi = avcodec_find_encoder_by_name("hevc_vaapi");
++	}
++	if(vaapi_codec==AV_CODEC_ID_H264) {
++		enc->vaapi = avcodec_find_encoder_by_name("h264_vaapi");
++	}
++	if(vaapi_codec==AV_CODEC_ID_MPEG2VIDEO) {
++		enc->vaapi = avcodec_find_encoder_by_name("mpeg2_vaapi");
++	}
++	if(vaapi_codec==AV_CODEC_ID_VP8) {
++		enc->vaapi = avcodec_find_encoder_by_name("vp8_vaapi");
++	}
++	if(vaapi_codec==AV_CODEC_ID_VP9) {
++		enc->vaapi = avcodec_find_encoder_by_name("vp9_vaapi");
++	}
++
 +	enc->first_packet = true;
 +
 +	blog(LOG_INFO, "---------------------------------");
@@ -445,6 +486,7 @@ index 00000000..9d475da0
 +static void vaapi_defaults(obs_data_t *settings)
 +{
 +	obs_data_set_default_string(settings, "vaapi_device", "/dev/dri/renderD128");
++	obs_data_set_default_int(settings, "vaapi_codec", AV_CODEC_ID_H264);
 +	obs_data_set_default_int(settings, "profile", FF_PROFILE_H264_BASELINE);
 +	obs_data_set_default_int(settings, "level", 31);
 +	obs_data_set_default_int(settings, "bitrate", 2500);
@@ -453,7 +495,8 @@ index 00000000..9d475da0
 +	obs_data_set_default_int(settings, "qp", 20);
 +	obs_data_set_default_int(settings, "quality", 0);
 +	obs_data_set_default_int(settings, "rendermode", 0);
-+
++	obs_data_set_default_int(settings, "lfl", 16);
++	obs_data_set_default_int(settings, "lfs", 4);
 +}
 +
 +static bool profile_modified(obs_properties_t *ppts, obs_property_t *p,
@@ -464,9 +507,43 @@ index 00000000..9d475da0
 +	int profile_type = (int)obs_data_get_int(settings, "profile");
 +
 +	set_visible(ppts, "bf", false);
-+	if (profile_type >= FF_PROFILE_H264_HIGH) {
++
++	if(profile_type!=FF_PROFILE_H264_BASELINE || profile_type != FF_PROFILE_H264_MAIN) {
 +		set_visible(ppts, "bf", true);
 +		obs_data_set_default_int(settings, "bf", 0);
++	}
++
++
++	return true;
++}
++
++static bool codec_modified(obs_properties_t *ppts, obs_property_t *p,
++		obs_data_t *settings)
++{
++	UNUSED_PARAMETER(p);
++
++	int codec_type = (int)obs_data_get_int(settings, "vaapi_codec");
++
++	set_visible(ppts, "quality", false);
++	set_visible(ppts, "bf", false);
++	set_visible(ppts, "lfl", false);
++	set_visible(ppts, "lfs", false);
++
++	if (codec_type!=AV_CODEC_ID_HEVC) {
++		set_visible(ppts, "quality", true);
++		if (codec_type==AV_CODEC_ID_H264) {
++			obs_data_set_default_int(settings, "quality", 0);
++		}
++
++		if (codec_type==AV_CODEC_ID_MPEG2VIDEO) {
++			obs_data_set_default_int(settings, "quality", 10);
++		}
++
++		if (codec_type==AV_CODEC_ID_VP8 || codec_type==AV_CODEC_ID_VP9) {
++			obs_data_set_default_int(settings, "quality", 40);
++			set_visible(ppts, "lfl", true);
++			set_visible(ppts, "lfs", true);
++		}
 +	}
 +
 +	return true;
@@ -513,12 +590,39 @@ index 00000000..9d475da0
 +		}
 +	}
 +
++	list = obs_properties_add_list(props, "vaapi_codec", "VAAPI Codec",
++			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
++
++	obs_property_list_add_int(list, "HEVC", AV_CODEC_ID_HEVC);
++	obs_property_list_add_int(list, "H.264 (default)", AV_CODEC_ID_H264);
++	obs_property_list_add_int(list, "MPEG-2", AV_CODEC_ID_MPEG2VIDEO);
++	obs_property_list_add_int(list, "VP8", AV_CODEC_ID_VP8);
++	obs_property_list_add_int(list, "VP9", AV_CODEC_ID_VP9);
++
++	obs_property_set_modified_callback(list, codec_modified);
++
 +	list = obs_properties_add_list(props, "profile", "Profile",
 +			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 +
-+	obs_property_list_add_int(list, "baseline", FF_PROFILE_H264_BASELINE);
-+	obs_property_list_add_int(list, "main", FF_PROFILE_H264_MAIN);
-+	obs_property_list_add_int(list, "high", FF_PROFILE_H264_HIGH);
++	obs_property_list_add_int(list, "h264-baseline", FF_PROFILE_H264_BASELINE);
++	obs_property_list_add_int(list, "h264-main", FF_PROFILE_H264_MAIN);
++	obs_property_list_add_int(list, "h264-high", FF_PROFILE_H264_HIGH);
++	obs_property_list_add_int(list, "hevc-main", FF_PROFILE_HEVC_MAIN);
++	obs_property_list_add_int(list, "hevc-main10", FF_PROFILE_HEVC_MAIN10);
++	obs_property_list_add_int(list, "hevc-main-still-picture", FF_PROFILE_HEVC_MAIN_STILL_PICTURE);
++	obs_property_list_add_int(list, "hevc-main-rext", FF_PROFILE_HEVC_REXT);
++	obs_property_list_add_int(list, "mpeg2-aac-low", FF_PROFILE_MPEG2_AAC_LOW);
++	obs_property_list_add_int(list, "mpeg2-aac-he", FF_PROFILE_MPEG2_AAC_HE);
++	obs_property_list_add_int(list, "mpeg2-422", FF_PROFILE_MPEG2_422);
++	obs_property_list_add_int(list, "mpeg2-high", FF_PROFILE_MPEG2_HIGH);
++	obs_property_list_add_int(list, "mpeg2-ss", FF_PROFILE_MPEG2_SS);
++	obs_property_list_add_int(list, "mpeg2-snr-scalable", FF_PROFILE_MPEG2_SNR_SCALABLE);
++	obs_property_list_add_int(list, "mpeg2-main", FF_PROFILE_MPEG2_MAIN);
++	obs_property_list_add_int(list, "mpeg2-simple", FF_PROFILE_MPEG2_SIMPLE);
++	obs_property_list_add_int(list, "vp9-0", FF_PROFILE_VP9_0);
++	obs_property_list_add_int(list, "vp9-1", FF_PROFILE_VP9_1);
++	obs_property_list_add_int(list, "vp9-2", FF_PROFILE_VP9_2);
++	obs_property_list_add_int(list, "vp9-3", FF_PROFILE_VP9_3);
 +
 +	obs_property_set_modified_callback(list, profile_modified);
 +
@@ -546,10 +650,16 @@ index 00000000..9d475da0
 +			0, 4, 1);
 +
 +	obs_properties_add_int(props, "qp",
-+			obs_module_text("QP"), 0, 52, 1);
++			obs_module_text("QP"), 0, 51, 1);
 +
-+	obs_properties_add_int(props, "quality (higher is worse but faster)",
-+			obs_module_text("Quality"), 0, 8, 1);
++	obs_properties_add_int(props, "quality",
++			obs_module_text("Quality"), 0, 40, 1);
++
++	obs_properties_add_int(props, "lfl",
++			obs_module_text("Loop Filter Level"), 0, 16, 1);
++
++	obs_properties_add_int(props, "lfs",
++			obs_module_text("Loop Filter Sharpness"), 0, 4, 1);
 +
 +	return props;
 +}
@@ -571,6 +681,7 @@ index 00000000..9d475da0
 +	*size       = enc->sei_size;
 +	return true;
 +}
++
 +
 +struct obs_encoder_info vaapi_encoder_info = {
 +	.id             = "ffmpeg_vaapi",
