@@ -608,7 +608,7 @@ index 00000000..c46967fd
 +	obs_property_list_add_int(list, "h264-main", FF_PROFILE_H264_MAIN);
 +	obs_property_list_add_int(list, "h264-high", FF_PROFILE_H264_HIGH);
 +	obs_property_list_add_int(list, "hevc-main", FF_PROFILE_HEVC_MAIN);
-+	obs_property_list_add_int(list, "hevc-main10", FF_PROFILE_HEVC_MAIN10);
++	obs_property_list_add_int(list, "hevc-main10", FF_PROFILE_HEVC_MAIN_10);
 +	obs_property_list_add_int(list, "hevc-main-still-picture", FF_PROFILE_HEVC_MAIN_STILL_PICTURE);
 +	obs_property_list_add_int(list, "hevc-main-rext", FF_PROFILE_HEVC_REXT);
 +	obs_property_list_add_int(list, "mpeg2-aac-low", FF_PROFILE_MPEG2_AAC_LOW);
