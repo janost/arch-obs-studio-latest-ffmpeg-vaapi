@@ -5,7 +5,7 @@
 
 pkgname=obs-studio
 pkgrel=1
-pkgver=20.1.3
+pkgver=21.0.2
 pkgdesc="Free and open source software for video recording and live streaming."
 arch=("i686" "x86_64")
 url="https://github.com/jp9000/obs-studio"
